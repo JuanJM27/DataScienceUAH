@@ -1,0 +1,223 @@
+################################################################# #
+##'
+##'  "Seminario - Hackathon datos espacialmente explícitos en R"
+##'       
+##'       Feb 2025
+##'       by Ignacio Morales-Castilla
+##'
+################################################################# #
+
+
+## limpiando el ambiente de trabajo
+rm(list=ls())
+options(stringsAsFactors = FALSE)
+
+
+## establecer directorio de trabajo (wd)
+getwd()  
+setwd("~/sandbox/")
+
+
+## cargar paquetes
+library(terra)
+library(sf)
+library(dplyr)
+library(ggspatial)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(googleway)
+library(ncdf4)
+library(ggplot2)
+library(geodata)
+library(mapSpain)
+theme_set(theme_bw())
+
+
+
+## 1. Carga de datos espaciales ##
+############################### ##
+
+##' busca, descarga y lee datos de temperaturas máximas diarias para 
+##' toda Europa, correspondientes al periodo 1980-1994
+##' https://surfobs.climate.copernicus.eu/dataaccess/access_eobs.php#datafiles 
+##' 
+tmaxeuropa <- rast("tx_ens_mean_0.1deg_reg_1980-1994_v30.0e.nc")
+tmaxeuropa
+ext(tmaxeuropa)
+
+##' lee datos de Parques Nacionales de España (en github)
+##' 
+enps <- st_read("ENP (1).shp")
+enps
+##' lee datos de temperaturas mensuales de España, para enero y julio (en github)
+##' 
+temp_enero <- st_drivers("temp.Spain.jan07.tif")
+temp_enero
+temp_julio <- st_drivers("temp.Spain.jul07.tif")
+temp_julio
+
+##' Descarga datos para el lince ibérico ("Lynx pardinus"), con el paquete rgbif
+##' 
+library(rgbif)
+lynx <- occ_search(scientificName = "Lynx pardinus")
+class(lynx)
+table(lynx$data$country)
+
+## 2. Manipulación de datos ##
+############################### ##
+
+
+##' Crea un objeto con los datos de temperaturas máximas de España del 
+##' mes de enero 
+##' de 1981. Repite para el mes de julio de 1981. Pista: tendras 
+##' que recortar y enmascarar
+##' los datos de E-OBS.
+
+##' Primero para el mes de enero
+tmax <- rast("tx_ens_mean_0.1deg_reg_1980-1994_v30.0e.nc")
+tmax
+head(tmax)
+tmax1981 <- subset(tmax, 365:730)
+fechas <- time(tmax1981)
+fechas <- as.Date(fechas)
+format(fechas, "%m")
+fechas_enero <- which(format(fechas, "%m") == "01")
+tmax_enero <- subset(tmax1981, fechas_enero)
+library(mapSpain)
+CCAA_sf <- esp_get_ccaa()
+tmaxenerospain <- crop(tmax_enero, CCAA_sf)
+plot(tmaxenerospain[[1]])
+
+#ahora para el mes de julio
+fechas_julio <- which(format(fechas, "%m") == "07")
+tmax_julio <- subset(tmax1981, fechas_julio)
+tmaxjuliospain <- crop(tmax_julio, CCAA_sf)
+plot(tmaxjuliospain[[1]])
+
+##' Crea un subset con los datos de ocurrencia del lince, solo para España
+##' 
+lynx <- lynx$data
+datoslince <- subset(lynx, country== "Spain")
+
+##' Extrae los datos de temperaturas mensuales de junio y enero para 
+##' cada ocurrencia del lince en España. Repite para las temperaturas máximas de los
+##'  días del mes de enero y del mes de julio de 1981
+datoslince2 <- data.frame(x = lynx$decimalLongitude, y=lynx$decimalLatitude)
+datoslince2_clean <- na.omit(datoslince2[, c("x", "y")])  # Elimina filas con NA en x o y
+datoslince2_sf <- st_as_sf(datoslince2_clean, coords = c("x", "y"), crs = 4326)
+lynxtemps <- extract(tmaxenerospain, datoslince2_sf)
+head(lynxtemps)
+#ahora para junio
+fechas_junio <- which(format(fechas, "%m") == "06")
+tmax_junio <- subset(tmax1981, fechas_junio)
+tmaxjuniospain <- crop(tmax_junio, CCAA_sf)
+lynxtemps2 <- extract(tmaxjuniospain, datoslince2)
+head(lynxtemps2)
+
+
+#ahora se va a hacer lo mismo, pero para las temperaturas máximas de enero y julio
+lynxtemps3 <- extract(tmaxenerospain, datoslince2)
+head(lynxtemps3)
+lynxtemps4 <- extract(tmaxjuliospain, datoslince2)
+head(lynxtemps4)
+
+##' Extrae las ocurrencias del lince que tienen lugar dentro de los 
+##' Parques Nacionales
+##' de España
+ppnparque <- subset(enps, figura_lp %in% "Parque Nacional")
+datoslince2_clean <- na.omit(datoslince2[, c("x", "y")])  # Elimina filas con NA en x o y
+datoslince2_sf <- st_as_sf(datoslince2_clean, coords = c("x", "y"), crs = 4326)
+ppnparque_sf <- st_as_sf(ppnparque, crs = 4326)
+crs_parques <- st_crs(ppnparque_sf)  # Obtener el CRS de parques nacionales
+lince_sf <- st_transform(datoslince2_sf, crs_parques)  # Transformar lince al mismo CRS
+st_crs(datoslince2_sf)
+st_crs(ppnparque_sf)
+lynx_ocurrencias <- st_intersection(lince_sf, ppnparque_sf)
+
+##' Calcula un mapa raster con la media de las temperaturas máximas 
+##' de enero de 1981
+##' y de julio de 1981
+dev.off()
+tmedia <- (tmax_enero + tmax_julio)/2 
+plot(tmedia, main = "Media de Temperaturas Máximas de Enero y Julio 1981")
+plot(tmedia$tx_367, main = "Media de Temperaturas Máximas de Enero y Julio 1981")
+
+##' transforma los mapas con esas medias correspondientes a 1981 a la resolución, extent
+##'   y proyección utilizada por los mapas mensuales que descargaste de github
+temp_mensualjun <- rast("temp.Spain.jan07.tif") #utilizo el mapa de junio, para el mapa de julio el procedimiento es el mismo
+res_mensual <- res(temp_mensualjun)
+ext_mensual <- ext(temp_mensualjun)
+crs_mensual <- crs(temp_mensualjun)
+# Asegurarse de que el CRS del mapa de temperatura media de 1981 sea el mismo que el de los mapas mensuales
+crs(tmedia) <- crs_mensual
+
+# Redefinir la extensión del raster de 1981 para coincidir con la de los mapas mensuales
+ext(tmedia) <- ext_mensual
+
+# Ajustar la resolución de temp_media para que coincida con la resolución de los mapas mensuales
+tmedia_resampled <- resample(tmedia, temp_mensualjun, method = "bilinear")  # Bilinear es común para suavizar valores continuos
+
+# Visualizar el mapa transformado
+plot(tmedia_resampled, main = "Temperaturas Medias de 1981 con Resolución y Proyección de Mapas Mensuales")
+
+## 3. Análisis: Realiza los análisis necesarios para resolver los siguientes problemas ##
+###################################################################################################### ##
+
+##' 3.a. Compara (p.ej. correlaciones, diagrama de dispersión) las temperaturas
+##' experimentadas por el lince dentro del Parque Nacional de Doñana en enero y julio 
+##' de 1981. 
+library(tidyverse)
+temp_total <- merge(lynxtemps3, lynxtemps4)
+ppnparque2 <- subset(ppnparque, sitename == "Doñana")
+union <-merge(temp_total, ppnparque2)
+view(union)
+doñana <-subset(union, sitename =="Doñana")
+ggplot(doñana, aes(x= tx_367, y= tx_548)) + geom_point() +
+  labs(title="Comparaciones de las temperaturas que experimenta el Lince Ibércio en enero y en julio",
+       x= "temperaturas de enero", y= "temperaturas de julio") #comparación del primer día de enero y el primer día de julio
+cor(doñana$tx_367, doñana$tx_548, use="complete.obs") #se obtiene una correlación negativa, es decir, cuando una de las variables aumenta, la otra disminuye
+
+
+##' 3.b. Haz un mapa que compare la media de las temperaturas máximas del mes de 
+##' enero de 1981 con las temperaturas medias del mes de enero. ¿en qué parte de 
+##' España las diferencias entre máximas del 81 y medias son más pequeñas? ¿Dónde
+##' son más grandes?   
+##' Pista: usa operaciones aritméticas
+library(ggplot2)
+library(sf)
+tmaxenerospain <- crop(tmax_enero, CCAA_sf)
+tmediamaxenerospain <- mean(tmaxenerospain)
+tmediaenero <- rast("tg_ens_mean_0.1deg_reg_1980-1994_v30.0e.nc")
+tmediaenero81 <- subset(tmediaenero, 365:395)
+tmediaenerospain <- crop(tmediaenero81, CCAA_sf)
+diferencia <- tmaxenerospain - tmediaenerospain
+mapaespaña <-plot(diferencia$tx_367)
+#En algunas zonas de Portugal y Aragón, es decir, el suroeste y el nordeste la diferencia es grande, mientras que
+#En los Pirineos, el centro peninsular y el sudeste la diferencia es menor
+
+##' 3.c. ¿En qué parque nacional fueron mayores las diferencias entre la media de las
+##' temperaturas máximas de julio de 1981 y las temperaturas medias de enero?   
+plot(ppnparque)
+c3 <- resample(tmaxjuliospain, tmediaenerospain)
+resta <- c3 - tmediaenerospain
+resta_media <- app(resta, fun = mean, na.rm = TRUE)
+plot(resta_media)
+
+diffppnn <- extract(resta_media, ppnparque)
+media <- sapply(difppnn,function(x) mean(x, na.rm=TRUE))
+
+parque_final <- ppnparque$sitename[wich.max(media)]
+cat(parque_final, "es el parque nacional con mayores diferencias")
+
+## 4. Bonus ##
+#################
+
+##' En unos días habrá un nuevo mapa cargado en la carpeta de datos
+##' de github. Cárgalo en R, multiplícalo por el mapa que has generado
+##' en el apartado 3b, y visualízalo. ¿Qué ha pasado? ¿Serías capaz de
+##' generar un resultado parecido, pero con una imagen propia? Recuerda
+##' que una fotografía, no deja de ser un mapa raster...
+
+install.packages("usethis")
+library(usethis)
+
